@@ -32,7 +32,7 @@ def seed_sot_from_csv(csv_path: str, max_rows: int = 500):
         logger.info(f"SOT already has {sot.count()} docs, skipping seed")
         return sot.count()
     count = 0
-    with open(path) as f:
+    with open(path, mode='r', encoding='utf-8') as f:
         reader = csv.DictReader(f)
         for i, row in enumerate(reader):
             if i >= max_rows:
@@ -80,16 +80,32 @@ def broadcast(route_response: RouteResponse):
 pipeline.on_route(broadcast)
 
 
+from src.scraper import fetch_openrouter_models, get_model_metrics
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Model Router dashboard starting...")
     seed_path = os.getenv("SOT_SEED_CSV", "data/alexa_qa/train.csv")
     seed_sot_from_csv(seed_path, max_rows=int(os.getenv("SOT_SEED_MAX", "500")))
+    
+    # Scrape dynamic model metrics
+    fetch_openrouter_models()
+    
     yield
     logger.info("Model Router dashboard stopping.")
 
 
 app = FastAPI(title="Model Router", lifespan=lifespan)
+
+from fastapi.middleware.cors import CORSMiddleware
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # =============================================================================
@@ -125,7 +141,9 @@ async def get_stats():
 
 @app.get("/models")
 async def get_models():
-    """Get model pool with tier breakdown."""
+    """Get dynamic model metrics from OpenRouter catalog."""
+    metrics = get_model_metrics()
+    
     return {
         "fast": [
             {"name": m.name, "id": m.openrouter_id, "params": m.total_params_b}
@@ -142,6 +160,7 @@ async def get_models():
             for m in DEEP_MODELS
         ],
         "count": len(ALL_MODELS),
+        "metrics": metrics,
     }
 
 

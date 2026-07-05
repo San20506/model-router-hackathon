@@ -274,13 +274,16 @@ class ChatbotPipeline:
         self, request: RouteRequest, generation: GenerationResult,
         routing: RoutingDecision, classification: ClassificationResult,
     ) -> GenerationResult:
-        if generation.error or not self.config.cascade_enabled:
+        if not self.config.cascade_enabled:
             return generation
-        if classification.confidence > 0.7 or routing.tier == "deep":
+            
+        # Do not cascade if it succeeded with high confidence, or if it's already at the max tier
+        if not generation.error and (classification.confidence > 0.7 or routing.tier == "deep"):
             return generation
+            
         next_tier = self._next_tier(routing.tier)
         if next_tier:
-            next_model = DEFAULT_MODEL_PER_TIER.get(next_tier, "meta-llama/llama-3.3-70b-instruct:free")
+            next_model = DEFAULT_MODEL_PER_TIER.get(next_tier, "openrouter/free")
             cascade_result = self.client.generate(request.query, next_model, next_tier)
             cascade_result.cascade_escalated = True
             cascade_result.cascade_from_tier = routing.tier
@@ -289,12 +292,14 @@ class ChatbotPipeline:
         return generation
 
     def _next_tier(self, current: str) -> Optional[str]:
-        ladder = ["grounded", "web_search", "deep_reasoning"]
+        ladder = ["fast", "thinking", "deep"]
         try:
             idx = ladder.index(current)
-            return ladder[min(idx + 1, len(ladder) - 1)]
+            if idx == len(ladder) - 1:
+                return None
+            return ladder[idx + 1]
         except ValueError:
-            return "deep_reasoning"
+            return "deep"
 
     def _record_response(self, response: RouteResponse):
         self.history.append(response)
@@ -329,3 +334,7 @@ class ChatbotPipeline:
             "web_searches": web,
             "deep_reasoning": deep,
         }
+
+    def get_history(self, limit: int = 50) -> list[RouteResponse]:
+        """Return recent routing history."""
+        return list(reversed(self.history[-limit:]))

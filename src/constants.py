@@ -339,7 +339,7 @@ TIER_MODELS: dict[str, list[ModelInfo]] = {
 }
 
 DEFAULT_MODEL_PER_TIER: dict[str, str] = {
-    "fast": "liquid/lfm-2.5-1.2b-thinking:free",
-    "thinking": "openai/gpt-oss-20b:free",
-    "deep": "meta-llama/llama-3.3-70b-instruct:free",
+    "fast": "openrouter/free",
+    "thinking": "openrouter/free",
+    "deep": "openrouter/free",
 }
