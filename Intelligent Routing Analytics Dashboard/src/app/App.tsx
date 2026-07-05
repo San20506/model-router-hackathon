@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
 import {
   Activity,
   Bell,
@@ -35,28 +35,7 @@ import {
 type Page = "Dashboard" | "Models" | "Billing" | "Settings";
 type ThemeMode = "dark" | "light";
 
-const MODEL_ROWS = [
-  { provider: "OpenAI", model: "gpt-4.1", usage: 18.4, input: 2.0, output: 8.0, requests: 46200 },
-  { provider: "OpenAI", model: "gpt-4.1-mini", usage: 64.8, input: 0.4, output: 1.6, requests: 184900 },
-  { provider: "OpenAI", model: "gpt-4o", usage: 12.7, input: 2.5, output: 10.0, requests: 31800 },
-  { provider: "Anthropic", model: "claude-3.5-sonnet", usage: 21.6, input: 3.0, output: 15.0, requests: 54100 },
-  { provider: "Anthropic", model: "claude-3-haiku", usage: 96.3, input: 0.25, output: 1.25, requests: 219400 },
-  { provider: "Google", model: "gemini-1.5-pro", usage: 10.2, input: 1.25, output: 5.0, requests: 24650 },
-  { provider: "Meta", model: "llama-3.1-70b-instruct", usage: 33.9, input: 0.72, output: 0.72, requests: 88700 },
-  { provider: "Mistral", model: "mistral-large", usage: 8.8, input: 2.0, output: 6.0, requests: 19300 },
-];
 
-const CREDIT_PACKS = [
-  { label: "Opening credit", credits: 500000, cost: 500 },
-  { label: "July top-up", credits: 250000, cost: 250 },
-  { label: "Enterprise promo", credits: 100000, cost: 0 },
-];
-
-const TIER_DATA = [
-  { name: "Easy", value: 96.3, color: "#7c3aed" },
-  { name: "Medium", value: 42.0, color: "#0ea5e9" },
-  { name: "Difficult", value: 31.1, color: "#f97316" },
-];
 
 const NAV_ITEMS: { icon: typeof LayoutDashboard; label: Page }[] = [
   { icon: LayoutDashboard, label: "Dashboard" },
@@ -95,17 +74,72 @@ function App() {
   };
   const sidebarW = collapsed ? 64 : 220;
 
-  const totals = useMemo(() => {
-    const usage = MODEL_ROWS.reduce((sum, row) => sum + row.usage, 0);
-    const modelCost = MODEL_ROWS.reduce((sum, row) => {
-      const inputShare = row.usage * 0.62;
-      const outputShare = row.usage * 0.38;
-      return sum + inputShare * row.input + outputShare * row.output;
-    }, 0);
-    const creditCost = CREDIT_PACKS.reduce((sum, row) => sum + row.cost, 0);
-    const credits = CREDIT_PACKS.reduce((sum, row) => sum + row.credits, 0);
-    return { usage, modelCost, creditCost, credits };
+  const [stats, setStats] = useState<any>(null);
+  const [history, setHistory] = useState<any[]>([]);
+  const [modelMetrics, setModelMetrics] = useState<Record<string, any>>({});
+
+  useEffect(() => {
+    fetch("http://localhost:8080/stats").then(r => r.json()).then(setStats).catch(console.error);
+    fetch("http://localhost:8080/history").then(r => r.json()).then(setHistory).catch(console.error);
+    fetch("http://localhost:8080/models").then(r => r.json()).then(data => {
+      if (data.metrics) setModelMetrics(data.metrics);
+    }).catch(console.error);
+    
+    const ws = new WebSocket("ws://localhost:8080/ws");
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "route") {
+          setHistory(prev => [data, ...prev].slice(0, 200));
+          setStats((prev: any) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              total_routes: prev.total_routes + 1,
+              tier_distribution: {
+                ...prev.tier_distribution,
+                [data.tier]: (prev.tier_distribution[data.tier] || 0) + 1
+              }
+            };
+          });
+        }
+      } catch (e) {}
+    };
+    return () => ws.close();
   }, []);
+
+  const tierData = useMemo(() => {
+    if (!stats) return [];
+    return [
+      { name: "Fast", value: stats.tier_distribution?.fast || 0, color: "#22c55e" },
+      { name: "Thinking", value: stats.tier_distribution?.thinking || 0, color: "#f59e0b" },
+      { name: "Deep", value: stats.tier_distribution?.deep || 0, color: "#a855f7" },
+    ].filter(t => t.value > 0);
+  }, [stats]);
+
+  const modelRows = useMemo(() => {
+    const usageMap: Record<string, any> = {};
+    history.forEach(r => {
+      const displayModelName = r.model_name || r.model_id || "Unknown";
+      const lookupKey = r.model_id || r.model_name || "Unknown";
+      if (!usageMap[displayModelName]) {
+        const metrics = modelMetrics[lookupKey] || {};
+        const inputCost = metrics.input_cost !== undefined ? metrics.input_cost : 0.1;
+        const outputCost = metrics.output_cost !== undefined ? metrics.output_cost : 0.1;
+        usageMap[displayModelName] = { provider: lookupKey.split('/')[0] || "Unknown", model: displayModelName, usage: 0, input: inputCost, output: outputCost, requests: 0 };
+      }
+      usageMap[displayModelName].usage += ((r.tokens_in || 0) + (r.tokens_out || 0)) / 1000000;
+      usageMap[displayModelName].requests += 1;
+    });
+    return Object.values(usageMap).sort((a, b) => b.usage - a.usage);
+  }, [history, modelMetrics]);
+
+  const totals = useMemo(() => {
+    const usage = modelRows.reduce((sum, row) => sum + row.usage, 0);
+    const modelCost = modelRows.reduce((sum, row) => sum + (row.usage * 0.62 * row.input) + (row.usage * 0.38 * row.output), 0);
+    return { usage, modelCost, routes: stats?.total_routes || 0 };
+  }, [modelRows, stats]);
+
 
   const pageTitle = page === "Dashboard" ? "Intelligent Routing Analytics" : page;
 
@@ -124,7 +158,7 @@ function App() {
       <aside style={{ position: "fixed", inset: "0 auto 0 0", width: sidebarW, borderRight: `1px solid ${palette.line}`, background: palette.panel, backdropFilter: "blur(18px)", transition: "width 160ms ease", zIndex: 10 }}>
         <div style={{ height: 64, display: "flex", alignItems: "center", gap: 12, padding: 16, borderBottom: `1px solid ${palette.line}` }}>
           <div style={{ width: 32, height: 32, borderRadius: 8, display: "grid", placeItems: "center", background: palette.brand, color: "white", fontWeight: 800 }}>IR</div>
-          {!collapsed && <strong style={{ letterSpacing: 0 }}>RouteIQ</strong>}
+          {!collapsed && <strong style={{ letterSpacing: 0 }}>COSBOT</strong>}
         </div>
 
         <nav style={{ padding: 10, display: "grid", gap: 6 }}>
@@ -179,8 +213,8 @@ function App() {
 
       <main style={{ marginLeft: sidebarW, paddingTop: 64, transition: "margin-left 160ms ease", position: "relative", zIndex: 1 }}>
         <div style={{ maxWidth: 1280, margin: "0 auto", padding: 24 }}>
-          {page === "Dashboard" && <Dashboard palette={palette} totals={totals} />}
-          {page === "Models" && <Models palette={palette} />}
+          {page === "Dashboard" && <Dashboard palette={palette} totals={totals} tierData={tierData} modelRows={modelRows} history={history} />}
+          {page === "Models" && <Models palette={palette} modelRows={modelRows} />}
           {page === "Billing" && <Billing palette={palette} totals={totals} />}
           {page === "Settings" && (
             <SettingsPage
@@ -220,7 +254,7 @@ function Metric({ palette, label, value, sub, icon: Icon }: { palette: any; labe
   );
 }
 
-function Dashboard({ palette, totals }: { palette: any; totals: { usage: number; modelCost: number; creditCost: number; credits: number } }) {
+function Dashboard({ palette, totals, tierData, modelRows, history }: { palette: any; totals: any; tierData: any[]; modelRows: any[]; history: any[] }) {
   return (
     <div style={{ display: "grid", gap: 16 }}>
       <Card palette={palette}>
@@ -247,11 +281,10 @@ function Dashboard({ palette, totals }: { palette: any; totals: { usage: number;
         </div>
       </Card>
 
-      <div className="grid-4" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16 }}>
+      <div className="grid-3" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
         <Metric palette={palette} label="Total model usage" value={millionTokens(totals.usage)} sub="Measured in million tokens" icon={Cpu} />
         <Metric palette={palette} label="Model run cost" value={currency(totals.modelCost)} sub="Blended input and output spend" icon={Activity} />
-        <Metric palette={palette} label="Credit balance" value="587K" sub={`${totals.credits.toLocaleString()} total credits purchased`} icon={WalletCards} />
-        <Metric palette={palette} label="Routing pages" value="4" sub="Routing logs page removed" icon={CheckCircle2} />
+        <Metric palette={palette} label="OpenRouter Integration" value="Active" sub="Connected via free tier API key" icon={CheckCircle2} />
       </div>
 
       <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
@@ -259,8 +292,8 @@ function Dashboard({ palette, totals }: { palette: any; totals: { usage: number;
           <h2 style={{ margin: "0 0 16px", fontSize: 16 }}>Usage by difficulty</h2>
           <ResponsiveContainer width="100%" height={260}>
             <PieChart>
-              <Pie data={TIER_DATA} dataKey="value" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={4}>
-                {TIER_DATA.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
+              <Pie data={tierData} dataKey="value" nameKey="name" innerRadius={68} outerRadius={100} paddingAngle={4}>
+                {tierData.map((entry) => <Cell key={entry.name} fill={entry.color} />)}
               </Pie>
               <Tooltip formatter={(value: number) => `${value}M tokens`} />
             </PieChart>
@@ -270,7 +303,7 @@ function Dashboard({ palette, totals }: { palette: any; totals: { usage: number;
         <Card palette={palette}>
           <h2 style={{ margin: "0 0 16px", fontSize: 16 }}>Top model usage</h2>
           <ResponsiveContainer width="100%" height={260}>
-            <BarChart data={MODEL_ROWS.slice(0, 6)}>
+            <BarChart data={modelRows.slice(0, 6)}>
               <CartesianGrid stroke={palette.line} vertical={false} />
               <XAxis dataKey="model" tick={{ fill: palette.muted, fontSize: 11 }} tickLine={false} axisLine={false} />
               <YAxis tick={{ fill: palette.muted, fontSize: 11 }} tickLine={false} axisLine={false} />
@@ -284,7 +317,7 @@ function Dashboard({ palette, totals }: { palette: any; totals: { usage: number;
   );
 }
 
-function Models({ palette }: { palette: any }) {
+function Models({ palette, modelRows }: { palette: any; modelRows: any[] }) {
   return (
     <Card palette={palette}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16, marginBottom: 18 }}>
@@ -307,7 +340,7 @@ function Models({ palette }: { palette: any }) {
             </tr>
           </thead>
           <tbody>
-            {MODEL_ROWS.map((row) => {
+            {modelRows.map((row) => {
               const estimated = row.usage * 0.62 * row.input + row.usage * 0.38 * row.output;
               return (
                 <tr key={row.model} style={{ borderBottom: `1px solid ${palette.line}` }}>
@@ -328,40 +361,19 @@ function Models({ palette }: { palette: any }) {
   );
 }
 
-function Billing({ palette, totals }: { palette: any; totals: { usage: number; modelCost: number; creditCost: number; credits: number } }) {
+function Billing({ palette, totals }: { palette: any; totals: { usage: number; modelCost: number } }) {
   return (
     <div style={{ display: "grid", gap: 16 }}>
-      <div className="grid-3" style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16 }}>
-        <Metric palette={palette} label="Total credit cost" value={currency(totals.creditCost)} sub={`${totals.credits.toLocaleString()} credits purchased`} icon={CreditCard} />
-        <Metric palette={palette} label="Model usage cost" value={currency(totals.modelCost)} sub={`${millionTokens(totals.usage)} consumed this period`} icon={Cpu} />
-        <Metric palette={palette} label="Remaining credit value" value={currency(587)} sub="Estimated from active credit balance" icon={WalletCards} />
+      <div className="grid-2" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+        <Metric palette={palette} label="Total API usage cost" value={currency(totals.modelCost)} sub="Computed from live OpenRouter pricing" icon={CreditCard} />
+        <Metric palette={palette} label="Tokens consumed" value={millionTokens(totals.usage)} sub="Total tokens routed across all models" icon={Cpu} />
       </div>
 
       <Card palette={palette}>
-        <h2 style={{ margin: "0 0 16px", fontSize: 18 }}>Credit purchases</h2>
-        <table>
-          <thead>
-            <tr style={{ color: palette.muted, fontSize: 12, textAlign: "left", borderBottom: `1px solid ${palette.line}` }}>
-              <th style={{ padding: "12px 10px" }}>Credit item</th>
-              <th style={{ padding: "12px 10px" }}>Credits</th>
-              <th style={{ padding: "12px 10px" }}>Cost</th>
-            </tr>
-          </thead>
-          <tbody>
-            {CREDIT_PACKS.map((row) => (
-              <tr key={row.label} style={{ borderBottom: `1px solid ${palette.line}` }}>
-                <td style={{ padding: "14px 10px", fontWeight: 700 }}>{row.label}</td>
-                <td style={{ padding: "14px 10px" }}>{row.credits.toLocaleString()}</td>
-                <td style={{ padding: "14px 10px" }}>{currency(row.cost)}</td>
-              </tr>
-            ))}
-            <tr>
-              <td style={{ padding: "14px 10px", fontWeight: 800 }}>Total</td>
-              <td style={{ padding: "14px 10px", fontWeight: 800 }}>{totals.credits.toLocaleString()}</td>
-              <td style={{ padding: "14px 10px", fontWeight: 800 }}>{currency(totals.creditCost)}</td>
-            </tr>
-          </tbody>
-        </table>
+        <h2 style={{ margin: "0 0 16px", fontSize: 18 }}>Billing overview</h2>
+        <p style={{ margin: "0", color: palette.muted, fontSize: 14, lineHeight: 1.6 }}>
+          Since you are connecting directly to OpenRouter with an API key, this dashboard computes your estimated spend in real-time based on the live models you query. The "Total API usage cost" reflects the exact pricing (per million tokens) scraped dynamically from OpenRouter. Free models (like the test tiers) will correctly calculate as $0.00.
+        </p>
       </Card>
     </div>
   );

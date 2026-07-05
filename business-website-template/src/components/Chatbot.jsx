@@ -33,7 +33,7 @@ const Chatbot = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault()
     if (!input.trim()) return
 
@@ -41,23 +41,21 @@ const Chatbot = () => {
     setMessages((prev) => [...prev, { from: 'user', text: userText }])
     setInput('')
 
-    setTimeout(() => {
-      const lower = userText.toLowerCase()
-      let reply = null
-
-      for (const [keyword, response] of Object.entries(keywordResponses)) {
-        if (lower.includes(keyword)) {
-          reply = response
-          break
-        }
+    try {
+      const response = await fetch('http://localhost:8080/route', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: userText })
+      })
+      const data = await response.json()
+      if (data.error) {
+        setMessages((prev) => [...prev, { from: 'bot', text: `Error: ${data.error}` }])
+      } else {
+        setMessages((prev) => [...prev, { from: 'bot', text: data.response || "No response received." }])
       }
-
-      if (!reply) {
-        reply = dummyResponses[Math.floor(Math.random() * dummyResponses.length)]
-      }
-
-      setMessages((prev) => [...prev, { from: 'bot', text: reply }])
-    }, 600)
+    } catch (error) {
+      setMessages((prev) => [...prev, { from: 'bot', text: "Sorry, I'm having trouble connecting to the server right now." }])
+    }
   }
 
   return (
