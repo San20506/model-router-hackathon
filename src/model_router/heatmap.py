@@ -199,9 +199,8 @@ class HeatmapClassifier:
             return "moderate", "web_search", round(conf, 2)
 
         # Fallback to classic distance-based
-        if sig.min_distance < 0.60:
-            return "close", "grounded", 0.6
-        elif sig.min_distance < 0.80:
-            return "moderate", "web_search", 0.5
-
+        # NOTE: close (< 0.60) and moderate (< 0.80) branches are dead code
+        # here — the partial-match branch above catches everything with
+        # matched_query_words >= 1 and min_distance < 0.85 first. Only
+        # min_distance >= 0.85 with at least one word match reaches here.
         return "distant", "deep_reasoning", 0.5

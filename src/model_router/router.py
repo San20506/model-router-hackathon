@@ -119,8 +119,14 @@ class CostRouter:
                 # For vision: pick the smallest capable model (less loaded)
                 return min(vision_models, key=lambda m: m.total_params_b or 0)
 
-        # Pick the SMALLEST model — cheapest, least rate-limited
-        return min(models, key=lambda m: m.total_params_b or 0)
+        # Pick the most reliable model — prefer Groq (dedicated infra),
+        # then smallest params (cheapest, least rate-limited)
+        def reliability(model):
+            """Priority: Groq > OpenRouter. Then by params (smaller = better)."""
+            groq_bonus = -1000 if model.openrouter_id.startswith("groq/") else 0
+            return (groq_bonus, model.total_params_b or 999)
+
+        return min(models, key=reliability)
 
 
 def _fallback_model(tier: str) -> ModelInfo:

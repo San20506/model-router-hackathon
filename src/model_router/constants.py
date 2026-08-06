@@ -21,6 +21,7 @@ class ModelInfo:
     specialties: list[str] = field(default_factory=list)
     description: str = ""
     benchmarks: Optional[BenchmarkProfile] = None
+    provider: str = "openrouter"  # which provider serves this model
 
 
 # =============================================================================
@@ -329,18 +330,69 @@ SPECIALTY_MODELS = [
 # MASTER POOL
 # =============================================================================
 
+# --- Groq-powered models (ultra-low latency inference) -------------------------
+
+GROQ_FAST_MODELS = [
+    ModelInfo(
+        name="Llama 3.1 8B Instant (Groq)",
+        openrouter_id="groq/llama-3.1-8b-instant",
+        tier="fast",
+        total_params_b=8.0,
+        context_length=131072,
+        provider="groq",
+        description="Groq's fastest Llama. ~800ms responses.",
+    ),
+]
+
+GROQ_THINKING_MODELS = [
+    ModelInfo(
+        name="Qwen 3.2 32B (Groq)",
+        openrouter_id="groq/qwen3-32b",
+        tier="thinking",
+        total_params_b=32.0,
+        context_length=131072,
+        provider="groq",
+        description="Qwen 3.2 32B via Groq. Solid reasoning.",
+    ),
+    ModelInfo(
+        name="Qwen 3.6 27B (Groq)",
+        openrouter_id="groq/qwen3.6-27b",
+        tier="thinking",
+        total_params_b=27.0,
+        context_length=131072,
+        provider="groq",
+        description="Alibaba's Qwen 3.6 via Groq.",
+    ),
+]
+
+GROQ_DEEP_MODELS = [
+    ModelInfo(
+        name="Llama 3.3 70B Versatile (Groq)",
+        openrouter_id="groq/llama-3.3-70b-versatile",
+        tier="deep",
+        total_params_b=70.0,
+        context_length=131072,
+        provider="groq",
+        description="Groq-hosted Llama 3.3 70B. Reliable frontier.",
+    ),
+]
+
 ALL_MODELS: list[ModelInfo] = (
-    UTILITY_MODELS + FAST_MODELS + THINKING_MODELS + DEEP_MODELS + SPECIALTY_MODELS
+    UTILITY_MODELS
+    + FAST_MODELS + GROQ_FAST_MODELS
+    + THINKING_MODELS + GROQ_THINKING_MODELS
+    + DEEP_MODELS + GROQ_DEEP_MODELS
+    + SPECIALTY_MODELS
 )
 
 TIER_MODELS: dict[str, list[ModelInfo]] = {
-    "fast": FAST_MODELS,
-    "thinking": THINKING_MODELS,
-    "deep": DEEP_MODELS,
+    "fast": FAST_MODELS + GROQ_FAST_MODELS,
+    "thinking": THINKING_MODELS + GROQ_THINKING_MODELS,
+    "deep": DEEP_MODELS + GROQ_DEEP_MODELS,
 }
 
 DEFAULT_MODEL_PER_TIER: dict[str, str] = {
-    "fast": "meta-llama/llama-3.2-3b-instruct:free",
-    "thinking": "google/gemma-4-31b-it:free",
-    "deep": "meta-llama/llama-3.3-70b-instruct:free",
+    "fast": "groq/llama-3.1-8b-instant",
+    "thinking": "groq/qwen3-32b",
+    "deep": "groq/llama-3.3-70b-versatile",
 }

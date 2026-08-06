@@ -36,6 +36,9 @@ from .decompose import DecompositionAnalyzer
 from .telemetry import Telemetry, get_telemetry
 from .pipeline import RoutingPipeline
 
+# Provider system
+from . import providers as provider_system
+
 __all__ = [
     "__version__",
     "RouterConfig",

@@ -7,6 +7,7 @@ matching. Dice provides content-word overlap as a zero-dep fallback.
 
 import logging
 import math
+import os
 import re
 import uuid
 from typing import Optional, Union
@@ -87,13 +88,16 @@ class _MiniLMEmbed:
 
 
 # ─── Embedder Selection ──────────────────────────────────────────────────
-
+# ─── Embedder Selection ────────────────────────────────────────────────────────
 def get_embedder(name: Optional[str] = None):
     """Return the best available embedder.
 
-    Priority: MiniLM > Dice. Pass ``name="dice"`` to force Dice.
+    Priority: env MODEL_ROUTER_EMBEDDER > arg name > MiniLM > Dice.
+    Pass ``name="dice"`` to force Dice. Set env var to override globally.
     """
-    if name == "dice":
+    import os
+    env_name = os.getenv("MODEL_ROUTER_EMBEDDER")
+    if env_name == "dice" or name == "dice":
         return _TinyEmbed()
     try:
         import sentence_transformers  # noqa
@@ -127,6 +131,11 @@ class SourceOfTruth:
     MODERATE_THRESHOLD = 0.35
 
     def __init__(self, embedder: Optional[str] = None):
+        # Share sentence-transformers cache across Hermes profiles
+        os.environ.setdefault(
+            "SENTENCE_TRANSFORMERS_HOME",
+            os.path.expanduser("~/.cache/sentence_transformers"),
+        )
         self._docs: list[SourceDocument] = []
         self._embedder = get_embedder(embedder)
 

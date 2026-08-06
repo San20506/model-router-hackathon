@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Router — Cost-Optimized LLM Routing</title>
+<style>
+  :root {
+    --bg: #020202;
+    --surface: #0e0e0e;
+    --surface2: #161616;
+    --border: #2a2a2a;
+    --text: #d4d4d4;
+    --muted: #6a6a6a;
+    --accent: #b8a58a;
+    --accent-dim: #7a6f5e;
+    --fast: #6bbf6b;
+    --thinking: #d4a84b;
+    --deep: #b07ad9;
+    --blocked: #d96060;
+    --error: #d96060;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 24px;
+    min-height: 100vh;
+  }
+  .layout {
+    max-width: 1440px;
+    margin: 0 auto;
+    display: grid;
+    grid-template-columns: 1fr 380px;
+    grid-template-rows: auto auto 1fr;
+    gap: 16px;
+    height: calc(100vh - 48px);
+  }
+
+  /* Header */
+  .header {
+    grid-column: 1 / -1;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 16px;
+    font-weight: 300;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  .header .sub {
+    color: var(--muted);
+    font-size: 11px;
+  }
+  .header .status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+  }
+  .status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--fast);
+    display: inline-block;
+  }
+  .status-dot.connecting { background: var(--thinking); animation: pulse 1.5s infinite; }
+  .status-dot.error { background: var(--error); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+  /* Query panel */
+  .query-panel {
+    grid-column: 1 / -1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 16px;
+  }
+  .query-panel form {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+  }
+  .query-panel label {
+    font-size: 11px;
+    color: var(--muted);
+    white-space: nowrap;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .query-panel input[type="text"] {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 12px;
+    font-family: inherit;
+    font-size: 13px;
+    outline: none;
+    transition: border-color .2s;
+  }
+  .query-panel input[type="text"]:focus {
+    border-color: var(--accent-dim);
+  }
+  .query-panel button {
+    background: var(--accent-dim);
+    color: var(--bg);
+    border: none;
+    padding: 8px 20px;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    transition: background .2s;
+  }
+  .query-panel button:hover {
+    background: var(--accent);
+  }
+  .query-panel button:disabled {
+    opacity: .4;
+    cursor: not-allowed;
+  }
+
+  /* Result area */
+  .result-area {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .result-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 14px 16px;
+  }
+  .result-card .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 16px;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .result-card .meta .tag {
+    display: inline-block;
+    padding: 1px 8px;
+    font-size: 10px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+  }
+  .tag-fast { background: var(--fast); color: #000; }
+  .tag-thinking { background: var(--thinking); color: #000; }
+  .tag-deep { background: var(--deep); color: #fff; }
+  .tag-blocked { background: var(--blocked); color: #fff; }
+
+  .result-card .query-text {
+    font-size: 13px;
+    margin-bottom: 6px;
+    color: var(--text);
+  }
+  .result-card .response-text {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.6;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+  }
+
+  /* Sidebar panels */
+  .sidebar {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    overflow-y: auto;
+  }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+  .panel-header {
+    padding: 10px 14px;
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+  }
+  .panel-body {
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+  .stat-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .stat-item {
+    text-align: center;
+    padding: 8px 4px;
+    background: var(--surface2);
+  }
+  .stat-item .value {
+    font-size: 22px;
+    font-weight: 300;
+    color: var(--accent);
+  }
+  .stat-item .label {
+    font-size: 9px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .tier-bar {
+    display: flex;
+    height: 6px;
+    gap: 2px;
+    margin: 8px 0;
+  }
+  .tier-bar .seg {
+    height: 100%;
+    border-radius: 0;
+    transition: width .3s;
+  }
+  .tier-bar .seg.fast { background: var(--fast); }
+  .tier-bar .seg.thinking { background: var(--thinking); }
+  .tier-bar .seg.deep { background: var(--deep); }
+  .tier-bar .seg.blocked { background: var(--blocked); }
+
+  /* Model pool */
+  .model-pool {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 10px;
+  }
+  .model-item {
+    display: flex;
+    justify-content: space-between;
+    padding: 2px 0;
+    color: var(--muted);
+  }
+  .model-item .name { color: var(--text); }
+
+  /* Feed */
+  .feed {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 300px;
+    overflow-y: auto;
+  }
+  .feed-item {
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+  }
+  .feed-item .top {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 2px;
+  }
+
+  .mono { font-family: inherit; }
+  .dim { color: var(--muted); }
+  .mt-2 { margin-top: 8px; }
+  .mb-2 { margin-bottom: 8px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="header">
+    <div>
+      <h1>Model Router</h1>
+      <div class="sub">Cost-optimized LLM routing · intent → SOT → classify → route</div>
+    </div>
+    <div class="status">
+      <span class="status-dot" id="statusDot"></span>
+      <span id="statusText">connecting...</span>
+    </div>
+  </div>
+
+  <div class="query-panel">
+    <form id="queryForm" onsubmit="return routeQuery()">
+      <label for="query">Route</label>
+      <input type="text" id="query" placeholder="Type a query to route through the pipeline..." autocomplete="off" autofocus>
+      <button type="submit" id="submitBtn">Send</button>
+    </form>
+  </div>
+
+  <div class="result-area" id="resultArea">
+    <div class="result-card" style="display:flex;align-items:center;justify-content:center;padding:40px;color:var(--muted);font-size:12px;">
+      <div style="text-align:center">
+        <div style="font-size:32px;margin-bottom:8px;color:var(--accent-dim);">→</div>
+        <div>Send a query to see the routing decision.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="sidebar">
+    <div class="panel">
+      <div class="panel-header">Live Stats</div>
+      <div class="panel-body" id="statsPanel">
+        <div class="stat-grid">
+          <div class="stat-item"><div class="value" id="totalRoutes">0</div><div class="label">Total</div></div>
+          <div class="stat-item"><div class="value" id="uniqueModels">0</div><div class="label">Models Used</div></div>
+        </div>
+        <div class="mt-2 mb-2">
+          <div class="tier-bar" id="tierBar"><div class="seg fast" style="width:25%"></div><div class="seg thinking" style="width:25%"></div><div class="seg deep" style="width:25%"></div><div class="seg blocked" style="width:25%"></div></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+          <span id="tierFast">fast 0</span>
+          <span id="tierThinking">thinking 0</span>
+          <span id="tierDeep">deep 0</span>
+          <span id="tierBlocked">blocked 0</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">Available Models</div>
+      <div class="panel-body" id="modelPool">
+        <div class="dim">loading...</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-header">Live Feed</div>
+      <div class="panel-body">
+        <div class="feed" id="feed"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+let reconnectTimer = null;
+
+function connect() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  dot.className = 'status-dot connecting';
+  txt.textContent = 'connecting...';
+}
+
+function onOpen() {
+  document.getElementById('statusDot').className = 'status-dot';
+  document.getElementById('statusText').textContent = 'connected';
+  document.getElementById('submitBtn').disabled = false;
+}
+
+function onClose() {
+  document.getElementById('statusDot').className = 'status-dot error';
+  document.getElementById('statusText').textContent = 'disconnected';
+  document.getElementById('submitBtn').disabled = true;
+  if (!reconnectTimer) {
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      window.location.reload();
+    }, 5000);
+  }
+}
+
+function onMessage(evt) {
+  const data = JSON.parse(evt.data);
+  if (data.type === 'route') {
+    addFeedItem(data);
+    updateStats(data.stats);
+  } else if (data.type === 'stats') {
+    updateStats(data.stats);
+  }
+}
+
+ws.onopen = onOpen;
+ws.onclose = onClose;
+ws.onmessage = onMessage;
+connect();
+
+refreshStats();
+refreshModels();
+setInterval(refreshStats, 15000);
+setInterval(refreshModels, 60000);
+
+function escapeHtml(t) {
+  if (!t) return '';
+  return t.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+          .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}
+
+async function routeQuery() {
+  const q = document.getElementById('query').value.trim();
+  if (!q) return false;
+  const btn = document.getElementById('submitBtn');
+  btn.disabled = true;
+  btn.textContent = 'Routing...';
+
+  try {
+    const res = await fetch('/route', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({query: q})
+    });
+    const data = await res.json();
+    showResult(q, data);
+    document.getElementById('query').value = '';
+  } catch (e) {
+    showResult(q, {tier: 'error', response: 'Failed to route: ' + e.message});
+  }
+  btn.disabled = false;
+  btn.textContent = 'Send';
+  return false;
+}
+
+async function refreshStats() {
+  try {
+    const res = await fetch('/stats');
+    if (!res.ok) return;
+    updateStats(await res.json());
+  } catch (e) {
+    console.error('Failed to refresh stats', e);
+  }
+}
+
+async function refreshModels() {
+  try {
+    const res = await fetch('/models');
+    if (!res.ok) return;
+    renderModels(await res.json());
+  } catch (e) {
+    console.error('Failed to refresh models', e);
+  }
+}
+
+function renderModels(data) {
+  const pool = document.getElementById('modelPool');
+  if (!pool) return;
+
+  const sections = [
+    ['utility', data.utility || []],
+    ['fast', data.fast || []],
+    ['thinking', data.thinking || []],
+    ['deep', data.deep || []],
+  ];
+
+  const body = [];
+  body.push(`<div class="dim" style="margin-bottom:8px">${data.available_count || 0} live / ${data.count || 0} total free models</div>`);
+
+  for (const [label, models] of sections) {
+    body.push(`<div style="margin-bottom:10px"><div style="font-size:10px;text-transform:uppercase;color:var(--muted);margin-bottom:4px">${label} (${models.length})</div>`);
+    for (const model of models) {
+      body.push(`<div class="model-item"><span class="name">${escapeHtml(model.name)}</span><span class="dim">${model.available ? 'live' : 'offline'}</span></div>`);
+    }
+    body.push(`</div>`);
+  }
+
+  pool.innerHTML = body.join('') || '<div class="dim">No models found.</div>';
+}
+
+function showResult(query, data) {
+  const tier = data.tier || 'error';
+  const tierClass = 'tag-' + tier;
+
+  let metaHtml = `<span class="tag ${tierClass}">${tier}</span>`;
+  if (data.model_name) metaHtml += ` <span>${escapeHtml(data.model_name)}</span>`;
+  if (data.latency_ms) metaHtml += ` <span>${data.latency_ms}ms</span>`;
+  if (data.source_distance !== undefined) metaHtml += ` <span>dist=${data.source_distance.toFixed(3)}</span>`;
+  if (data.confidence !== undefined) metaHtml += ` <span>conf=${data.confidence.toFixed(2)}</span>`;
+  if (data.tokens_in !== undefined) metaHtml += ` <span>${data.tokens_in}→${data.tokens_out}t</span>`;
+
+  const card = document.createElement('div');
+  card.className = 'result-card';
+  card.innerHTML = `
+    <div class="meta">${metaHtml}</div>
+    <div class="query-text">${escapeHtml(query)}</div>
+    <div class="response-text">${escapeHtml(data.response || '(no response)')}</div>
+  `;
+
+  const area = document.getElementById('resultArea');
+  area.insertBefore(card, area.firstChild);
+
+  // Keep only last 10
+  while (area.children.length > 10) {
+    area.removeChild(area.lastChild);
+  }
+}
+
+function addFeedItem(data) {
+  const feed = document.getElementById('feed');
+  const item = document.createElement('div');
+  item.className = 'feed-item';
+  const tier = data.tier || '?';
+  item.innerHTML = `<div class="top"><span class="tag tag-${tier}">${tier}</span><span class="dim">${data.model_name || ''}</span></div><div class="dim">${escapeHtml((data.query || '').substring(0, 60))}</div>`;
+  feed.insertBefore(item, feed.firstChild);
+  while (feed.children.length > 50) feed.removeChild(feed.lastChild);
+}
+
+function updateStats(stats) {
+  if (!stats) return;
+  document.getElementById('totalRoutes').textContent = stats.total || stats.total_routes || 0;
+
+  const td = stats.tier_distribution || {};
+  const total = stats.total || 1;
+  const fastPct = ((td.fast || 0) / total * 100).toFixed(0);
+  const thinkPct = ((td.thinking || 0) / total * 100).toFixed(0);
+  const deepPct = ((td.deep || 0) / total * 100).toFixed(0);
+  const blockPct = ((td.blocked || 0) / total * 100).toFixed(0);
+
+  document.getElementById('tierFast').textContent = `fast ${td.fast || 0}`;
+  document.getElementById('tierThinking').textContent = `thinking ${td.thinking || 0}`;
+  document.getElementById('tierDeep').textContent = `deep ${td.deep || 0}`;
+  document.getElementById('tierBlocked').textContent = `blocked ${td.blocked || 0}`;
+  document.getElementById('tierBar').innerHTML =
+    `<div class="seg fast" style="width:${fastPct}%"></div>` +
+    `<div class="seg thinking" style="width:${thinkPct}%"></div>` +
+    `<div class="seg deep" style="width:${deepPct}%"></div>` +
+    `<div class="seg blocked" style="width:${blockPct}%"></div>`;
+
+  // Model count
+  const models = stats.models_used || {};
+  const modelCount = Object.keys(models).length;
+  document.getElementById('uniqueModels').textContent = modelCount || 0;
+}
+</script>
+</body>
+</html>

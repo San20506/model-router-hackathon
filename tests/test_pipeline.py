@@ -84,6 +84,59 @@ def test_pipeline_history():
     assert len(history) == 2
 
 
+def test_pipeline_stats_with_zero_history():
+    config = _make_config()
+    pipe = RoutingPipeline(config)
+    stats = pipe.get_stats()
+    assert stats["total"] == 0
+
+
+def test_pipeline_listener_fires():
+    """Registered listener callback receives route response."""
+    config = _make_config()
+    pipe = RoutingPipeline(config)
+    pipe.sot.add_document("test content", source="test")
+
+    received = []
+
+    def listener(response):
+        received.append(response)
+
+    pipe.on_route(listener)
+    pipe.route(RouteRequest(query="hello"))
+    assert len(received) == 1
+    assert received[0].query == "hello"
+
+
+def test_pipeline_listener_exception_does_not_crash():
+    """Listener that raises should not break the pipeline."""
+    config = _make_config()
+    pipe = RoutingPipeline(config)
+    pipe.sot.add_document("test content", source="test")
+
+    def broken_listener(response):
+        raise RuntimeError("boom")
+
+    pipe.on_route(broken_listener)
+    # Should not raise
+    result = pipe.route(RouteRequest(query="hello"))
+    assert result is not None
+
+
+def test_pipeline_history_capped():
+    """History list is capped at 1000 entries."""
+    config = _make_config()
+    pipe = RoutingPipeline(config)
+    pipe.sot.add_document("test content", source="test")
+
+    for i in range(1005):
+        pipe.route(RouteRequest(query=f"query-{i}"))
+
+    stats = pipe.get_stats()
+    assert stats["total_routes"] == 1000
+    assert len(pipe.history) == 1000
+
+
 def test_pipeline_empty_sot():
     config = _make_config()
     pipe = RoutingPipeline(config)

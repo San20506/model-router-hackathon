@@ -37,6 +37,7 @@ from .intent import IntentDetector
 from .decompose import DecompositionAnalyzer
 from .telemetry import get_telemetry, Telemetry
 from .constants import DEFAULT_MODEL_PER_TIER, TIER_MODELS, ALL_MODELS
+from .providers import get_provider, list_providers
 
 logger = logging.getLogger(__name__)
 
@@ -61,13 +62,25 @@ class RoutingPipeline:
         telemetry: Optional[Telemetry] = None,
     ):
         self.config = config or get_config()
-        self.sot = SourceOfTruth()
+        self.sot = SourceOfTruth(embedder=self.config.embedder_backend)
         self.classifier = HeatmapClassifier()
         self.router = CostRouter()
         self.intent_detector = IntentDetector()
         self.decomposer = DecompositionAnalyzer()
+
+        # ── Providers (new) ────────────────────────────────────────────
+        # Initialise each configured provider. The legacy OpenRouterClient
+        # is kept for backward compat — new code should use providers.
+        self.providers: dict[str, "BaseProvider"] = {}
+        self._init_providers()
+
+        # ── Legacy OpenRouter client (backward compat) ─────────────────
+        legacy_key = self.config.openrouter_api_key
+        if not legacy_key:
+            or_cfg = self.config.providers.get("openrouter", {})
+            legacy_key = or_cfg.get("api_key", "")
         self.client = OpenRouterClient(
-            api_key=self.config.openrouter_api_key,
+            api_key=legacy_key,
             timeout=self.config.request_timeout_seconds,
             retry_count=self.config.rate_limit_retry_count,
             base_delay=self.config.rate_limit_base_delay,
@@ -194,7 +207,7 @@ class RoutingPipeline:
             prompt = self._build_prompt(
                 request.query, source_context, search_context=search_context
             )
-            generation = self.client.generate(
+            generation = self._generate_via_provider(
                 prompt, routing.model_id, routing.tier,
                 fallback_models=self._fallbacks_for(routing.tier),
             )
@@ -213,7 +226,7 @@ class RoutingPipeline:
                 search_context=search_context,
                 reasoning_steps=steps,
             )
-            generation = self.client.generate(
+            generation = self._generate_via_provider(
                 prompt, routing.model_id, routing.tier,
                 fallback_models=self._fallbacks_for(routing.tier),
             )
@@ -225,7 +238,7 @@ class RoutingPipeline:
         else:
             # Grounded — answer directly from source
             prompt = self._build_prompt(request.query, source_context)
-            generation = self.client.generate(
+            generation = self._generate_via_provider(
                 prompt, routing.model_id, routing.tier,
                 fallback_models=self._fallbacks_for(routing.tier),
             )
@@ -272,6 +285,74 @@ class RoutingPipeline:
 
         self._record_response(response)
         return response
+
+    # ── Provider dispatch ────────────────────────────────────────────────
+
+    def _init_providers(self):
+        """Initialise provider instances from config."""
+        from .providers import BaseProvider as _BP
+        self.BaseProvider = _BP
+        for name, cfg in self.config.providers.items():
+            try:
+                self.providers[name] = get_provider(
+                    name,
+                    api_key=cfg.get("api_key", ""),
+                    config=cfg,
+                )
+                logger.info("Initialised provider: %s", name)
+            except ValueError as e:
+                logger.warning("Provider '%s' not available: %s", name, e)
+
+    def _resolve_provider(self, model_id: str) -> str:
+        """Determine which provider serves a model ID.
+
+        Uses longest-prefix matching so 'groq/' beats ''.
+        Falls back to default_provider.
+        """
+        best = ("", None)
+        for name, prov in self.providers.items():
+            prefix = getattr(prov, "model_prefix", "")
+            if prefix and model_id.startswith(prefix):
+                if len(prefix) > len(best[0]):
+                    best = (prefix, name)
+        if best[1]:
+            return best[1]
+        return self.config.default_provider
+
+    def _generate_via_provider(
+        self,
+        query: str,
+        model_id: str,
+        tier: str,
+        max_tokens: int = 1024,
+        temperature: float = 0.7,
+        system_prompt: Optional[str] = None,
+        fallback_models: Optional[list[str]] = None,
+    ) -> GenerationResult:
+        """Generate using the correct provider for the model.
+
+        Falls back to legacy ``self.client`` if no matching provider
+        is available (backward compat).
+        """
+        provider_name = self._resolve_provider(model_id)
+        provider = self.providers.get(provider_name)
+        if provider is not None:
+            return provider.generate(
+                query, model_id, tier,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                system_prompt=system_prompt,
+                fallback_models=fallback_models,
+            )
+        return self.client.generate(
+            query, model_id, tier,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+            fallback_models=fallback_models,
+        )
+
+    # ── Pipeline stages follow ────────────────────────────────────────────
 
     @staticmethod
     def _resolve_reasoning_flag(
@@ -380,7 +461,7 @@ class RoutingPipeline:
         if not next_model:
             return generation
 
-        cascade_result = self.client.generate(
+        cascade_result = self._generate_via_provider(
             request.query, next_model, next_tier
         )
         cascade_result.cascade_escalated = True
@@ -394,7 +475,7 @@ class RoutingPipeline:
                 "Cascade to %s (%s) failed: %s. Trying emergency fallback: %s",
                 next_tier, next_model, cascade_result.error, fallback_id,
             )
-            fallback = self.client.generate(
+            fallback = self._generate_via_provider(
                 request.query, fallback_id, "deep"
             )
             fallback.cascade_escalated = True
@@ -447,14 +528,18 @@ class RoutingPipeline:
         """Aggregate stats from routing history."""
         total = len(self.history)
         if total == 0:
-            return {"total": 0}
+            return {"total": 0, "total_routes": 0, "models_used": {}}
         tiers = {}
+        models_used = {}
         web = 0
         deep = 0
         reasoning_flags = 0
         vision_flags = 0
         for r in self.history:
             tiers[r.routing.tier] = tiers.get(r.routing.tier, 0) + 1
+            model_name = r.routing.model_name or r.routing.model_id
+            if model_name:
+                models_used[model_name] = models_used.get(model_name, 0) + 1
             if r.generation.web_search_used:
                 web += 1
             if r.generation.deep_reasoning_used:
@@ -464,8 +549,10 @@ class RoutingPipeline:
             if r.routing.needs_vision:
                 vision_flags += 1
         return {
+            "total": total,
             "total_routes": total,
             "tier_distribution": tiers,
+            "models_used": models_used,
             "web_searches": web,
             "deep_reasoning": deep,
             "reasoning_flags": reasoning_flags,
